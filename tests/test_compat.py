@@ -38,11 +38,22 @@ def test_option_keys() -> None:
 
 def test_source_keys() -> None:
     marker = logic.Marker(
-        uid="abc_marker_0", entity_id="sensor.x", device_id="dev", printer="P", name="Black"
+        uid="abc_marker_0",
+        entity_id="sensor.x",
+        device_id="dev",
+        printer="P",
+        name="Black",
+        printer_name="Black ink",
     )
     settings = logic.Settings(config_entry_id="entry")
     task = logic.build_add_task_payload(marker, settings)
-    assert task["source"] == {"home_keeper_ipp": {"marker_uid": "abc_marker_0", "device_id": "dev"}}
+    assert task["source"] == {
+        "home_keeper_ipp": {
+            "marker_uid": "abc_marker_0",
+            "device_id": "dev",
+            "marker_name": "Black ink",
+        }
+    }
     asset = logic.build_asset_payload(marker.printer_key, [marker], settings)
     assert asset["source"] == {
         "home_keeper_ipp": {"role": "printer_supplies", "printer_key": "abc", "device_id": "dev"}

@@ -20,6 +20,7 @@ from .helpers import (
     set_level,
     settle as _settle,
     setup_glue as _setup_glue,
+    shift_markers,
 )
 
 models = pytest.importorskip(
@@ -288,3 +289,37 @@ async def test_reload_of_home_keeper_never_duplicates(hass, printer):
     await _settle(hass)
     assert len(hk.tasks) == 1
     assert len(hk.assets) == 1
+
+
+async def test_shifted_marker_numbers_keep_tasks_on_their_cartridges(hass, printer):
+    ipp_entry, device = printer
+    hk = await async_setup_fake_home_keeper(hass)
+    await _setup_glue(hass)
+    black = _task(hk, 0)
+    task_id = black["id"]
+    assert black["source"][SOURCE_NS]["marker_name"] == "Black ink"
+    _part(hk, "Black ink")["stock"] = 2
+
+    cyan_now = await shift_markers(hass, ipp_entry, device)
+    # The IPP integration publishes the new readings right away; the rebind waits for
+    # the registry debounce. The old sensor of the black ink now shows the waste box
+    # at 100 %: that must not clear the black ink's task.
+    set_level(hass, BLACK, 100)
+    set_level(hass, CYAN, 8)
+    set_level(hass, cyan_now, 60)
+    await hass.async_block_till_done()
+    assert hk.tasks[task_id]["next_due"]
+    assert not hk.tasks[task_id].get("completions")
+
+    await _settle(hass)
+    black = hk.tasks[task_id]
+    assert black["source"][SOURCE_NS]["marker_uid"] == f"{PRINTER_UID}_marker_1"
+    assert black["source"]["part"]["part_id"] == _part(hk, "Black ink")["id"]
+    assert len([t for t in hk.tasks.values() if (t.get("source") or {}).get(SOURCE_NS)]) == 1
+
+    # The black ink, now on marker_1, is replaced: its task clears and draws its spare.
+    set_level(hass, CYAN, 100)
+    await hass.async_block_till_done()
+    assert hk.tasks[task_id]["next_due"] is None
+    assert len(hk.tasks[task_id]["completions"]) == 1
+    assert _part(hk, "Black ink")["stock"] == 1

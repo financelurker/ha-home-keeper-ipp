@@ -22,8 +22,19 @@ def marker(level=None, *, uid="printer1_marker_0", name="Black ink", paused=Fals
     )
 
 
-def task(uid="printer1_marker_0", *, armed=False, enabled=True, paused=False, tid="t1", **extra):
+def task(
+    uid="printer1_marker_0",
+    *,
+    armed=False,
+    enabled=True,
+    paused=False,
+    tid="t1",
+    bound=None,
+    **extra,
+):
     src = {"marker_uid": uid, "device_id": "dev1"}
+    if bound:
+        src["marker_name"] = bound
     if paused:
         src["paused"] = True
     return {
@@ -210,3 +221,107 @@ def test_notes_name_where_the_limit_came_from():
     assert "30 %" in notes
     notes = logic.task_notes(marker(8, low_level=0), S)
     assert "Untergrenze 15 %, aus den Optionen" in notes
+
+
+# ── stable binding: the IPP integration numbers markers by sorted name ───────
+def named(level, index, name, **kw):
+    return marker(level, uid=f"printer1_marker_{index}", name=name, printer_name=name, **kw)
+
+
+def test_new_task_is_bound_to_the_printers_name():
+    payload = logic.plan_marker([], named(5, 0, "Black ink"), S).payload
+    assert payload["source"][SOURCE_NS]["marker_name"] == "Black ink"
+
+
+def test_display_rename_keeps_binding_and_part():
+    renamed = marker(5, name="Schwarz (Büro)", printer_name="Black ink")
+    assert logic.matches(task(bound="Black ink"), renamed)
+    assert logic.desired_parts([renamed], "de")[0]["name"] == "Black ink"
+
+
+def test_shifted_numbers_rebind_tasks_to_their_cartridges():
+    # Before: Black ink = marker_0, Cyan ink = marker_1. The printer now also reports
+    # "A waste box", which sorts first and pushes both one place down.
+    tasks = [
+        task("printer1_marker_0", tid="black", armed=True, bound="Black ink"),
+        task("printer1_marker_1", tid="cyan", bound="Cyan ink"),
+    ]
+    markers = [named(90, 0, "A waste box"), named(8, 1, "Black ink"), named(100, 2, "Cyan ink")]
+    actions = logic.plan_reconcile(tasks, markers, S)
+    rebinds = {a.task_id: a.uid for a in actions if isinstance(a, logic.RebindTask)}
+    assert rebinds == {"black": "printer1_marker_1", "cyan": "printer1_marker_2"}
+    assert not [a for a in actions if isinstance(a, logic.DeleteTask)]
+    # Black stays armed at 8 %, cyan at 100 % is fine, the waste box is not low:
+    # nothing is created, cleared or armed by mistake.
+    assert [a for a in actions if not isinstance(a, logic.RebindTask)] == []
+
+
+def test_swapped_numbers_rebind_both_tasks():
+    tasks = [
+        task("printer1_marker_0", tid="black", armed=True, bound="Black ink"),
+        task("printer1_marker_1", tid="cyan", bound="Cyan ink"),
+    ]
+    markers = [named(100, 0, "Cyan ink"), named(8, 1, "Black ink")]
+    actions = logic.plan_reconcile(tasks, markers, S)
+    rebinds = {a.task_id: a.uid for a in actions if isinstance(a, logic.RebindTask)}
+    assert rebinds == {"black": "printer1_marker_1", "cyan": "printer1_marker_0"}
+    assert len(actions) == 2
+
+
+def test_cartridge_the_printer_no_longer_reports_loses_its_task():
+    tasks = [task("printer1_marker_0", tid="black", bound="Black ink")]
+    actions = logic.plan_reconcile(tasks, [named(50, 0, "Black Cartridge XL")], S)
+    assert actions == [logic.DeleteTask("black", "printer1_marker_0")]
+
+
+def test_task_from_before_names_is_backfilled_where_it_is():
+    actions = logic.plan_reconcile([task(armed=True)], [named(8, 0, "Black ink")], S)
+    assert len(actions) == 1
+    assert isinstance(actions[0], logic.RebindTask)
+    assert actions[0].uid == "printer1_marker_0"
+    assert actions[0].source[SOURCE_NS]["marker_name"] == "Black ink"
+
+
+def test_stale_binding_never_acts_on_the_wrong_cartridge():
+    black_task = task("printer1_marker_0", armed=True, bound="Black ink")
+    now_cyan = named(100, 0, "Cyan ink")
+    assert logic.plan_marker([black_task], now_cyan, S) is None
+    assert (
+        logic.plan_user_completion("t1", "ts", named(5, 0, "Cyan ink"), S, task=black_task) is None
+    )
+
+
+def test_same_name_twice_on_one_printer_stays_on_its_sensor():
+    tasks = [task("printer1_marker_1", tid="b", armed=True, bound="Black")]
+    markers = [named(8, 0, "Black"), named(8, 1, "Black")]
+    assert [
+        a for a in logic.plan_reconcile(tasks, markers, S) if not isinstance(a, logic.CreateTask)
+    ] == []
+
+
+def test_sensor_without_printer_name_trusts_its_id():
+    tasks = [task("printer1_marker_0", armed=True, bound="Black ink")]
+    assert logic.plan_reconcile(tasks, [marker(8, printer_name=None)], S) == []
+
+
+def test_part_named_after_display_name_is_renamed_not_replaced():
+    renamed = marker(50, name="Schwarz", printer_name="Black ink")
+    asset = {
+        "id": "a1",
+        "source": {SOURCE_NS: {"role": "printer_supplies", "printer_key": "printer1"}},
+        "parts": [{"id": "p0", "name": "Schwarz", "type": "consumable", "stock": 2}],
+    }
+    actions = logic.plan_stock([asset], [], [renamed], S, enabled=True)
+    assert len(actions) == 1
+    assert actions[0].parts[0]["id"] == "p0"
+    assert actions[0].parts[0]["name"] == "Black ink"
+
+
+def test_live_reading_never_duplicates_a_task_bound_elsewhere():
+    # The black ink's task still sits on marker_0; marker_1 now reports the black ink
+    # at 8 %. Until the reconcile rebinds, the live path must not create a second task.
+    tasks = [task("printer1_marker_0", armed=True, bound="Black ink")]
+    assert logic.plan_marker(tasks, named(8, 1, "Black ink"), S) is None
+    # Another printer's black ink is a different cartridge.
+    other = marker(8, uid="printer2_marker_0", printer_name="Black ink")
+    assert isinstance(logic.plan_marker(tasks, other, S), logic.CreateTask)
