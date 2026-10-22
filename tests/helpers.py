@@ -86,3 +86,28 @@ async def add_printer(hass: HomeAssistant):
     set_level(hass, BLACK, 8)
     set_level(hass, CYAN, 60)
     return ipp_entry, device
+
+
+async def shift_markers(hass: HomeAssistant, ipp_entry, device) -> str:
+    """Make the printer report "A waste box" too, as the IPP integration would.
+
+    The IPP integration numbers its marker sensors by their position in the printer's
+    marker list sorted by name. A new marker that sorts first pushes every other one a
+    place down: ``marker_0`` now reports the waste box, ``marker_1`` the black ink and
+    a new ``marker_2`` the cyan ink. The entity ids stay as they were. Returns the new
+    sensor's entity id.
+    """
+    ent_reg = er.async_get(hass)
+    new = ent_reg.async_get_or_create(
+        "sensor",
+        "ipp",
+        f"{PRINTER_UID}_marker_2",
+        suggested_object_id="hp_officejet_marker_2",
+        config_entry=ipp_entry,
+        device_id=device.id,
+        original_name="Cyan ink",
+        translation_key="marker",
+    )
+    ent_reg.async_update_entity(BLACK, original_name="A waste box")
+    ent_reg.async_update_entity(CYAN, original_name="Black ink")
+    return new.entity_id

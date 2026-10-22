@@ -61,20 +61,33 @@ BETWEEN = "between"
 class Marker:
     """One IPP marker sensor, as the wiring read it from the registries and state."""
 
-    uid: str  # entity registry unique_id — stable across renames and restarts
+    uid: str  # entity registry unique_id: printer id + position in the sorted marker list
     entity_id: str
     device_id: str | None
     printer: str
-    name: str
+    name: str  # what Home Assistant shows (the user's name for the sensor, if they set one)
     marker_type: str | None = None
     level: float | None = None  # None: unknown/unavailable
     low_level: float | None = None  # the printer's own low mark for this cartridge
     paused: bool = False  # the sensor is disabled (printer entry, device or entity)
+    # The name the printer itself reports for this marker (the registry's
+    # ``original_name``). Only the printer changes it; a rename in Home Assistant does not.
+    printer_name: str | None = None
 
     @property
     def printer_key(self) -> str:
         """The printer's own identity: the marker unique id without ``_marker_N``."""
-        return re.sub(IPP_MARKER_UNIQUE_ID_RE, "", self.uid) or self.uid
+        return printer_key_of(self.uid)
+
+    @property
+    def identity(self) -> str:
+        """The cartridge as the printer names it; the display name when it names none."""
+        return self.printer_name or self.name
+
+
+def printer_key_of(uid: str) -> str:
+    """Return the printer part of a marker unique id (without ``_marker_N``)."""
+    return re.sub(IPP_MARKER_UNIQUE_ID_RE, "", uid) or uid
 
 
 @dataclass(frozen=True)
@@ -125,6 +138,22 @@ class RevertCompletion:
 
 
 @dataclass(frozen=True)
+class RebindTask:
+    """``update_task`` with our ``source`` only: the task follows its cartridge.
+
+    The IPP integration numbers its marker sensors by their position in the printer's
+    marker list sorted by name, so a renamed, added or removed marker shifts the
+    numbers. A task is bound to the printer's name for its cartridge and moves to
+    whichever sensor carries that name now. Also writes the name into a task created
+    before names were recorded.
+    """
+
+    task_id: str
+    uid: str
+    source: dict[str, Any]
+
+
+@dataclass(frozen=True)
 class DeleteTask:
     """``delete_task``: the marker is gone or excluded."""
 
@@ -150,7 +179,16 @@ class ResumeTask:
     source: dict[str, Any]
 
 
-Action = CreateTask | ArmTask | ClearTask | RevertCompletion | DeleteTask | PauseTask | ResumeTask
+Action = (
+    CreateTask
+    | ArmTask
+    | ClearTask
+    | RevertCompletion
+    | RebindTask
+    | DeleteTask
+    | PauseTask
+    | ResumeTask
+)
 
 
 @dataclass(frozen=True)
@@ -275,6 +313,38 @@ def task_for(tasks: list[dict[str, Any]], uid: str) -> dict[str, Any] | None:
     return None
 
 
+def bound_name(task: dict[str, Any]) -> str | None:
+    """Return the printer's name of the cartridge the task is bound to, if recorded."""
+    name = (ns(task) or {}).get("marker_name")
+    return name if isinstance(name, str) and name else None
+
+
+def matches(task: dict[str, Any], marker: Marker) -> bool:
+    """Tell whether *marker* still is the cartridge *task* was made for.
+
+    ``False`` only when both names are known and differ: the sensor now reports
+    another cartridge, and the task must not act on it until it has been rebound.
+    """
+    name = bound_name(task)
+    return name is None or marker.printer_name is None or name == marker.printer_name
+
+
+def bound_elsewhere(tasks: list[dict[str, Any]], marker: Marker) -> bool:
+    """Tell whether a task on another sensor is bound to *marker*'s cartridge.
+
+    Then the printer's marker list shifted and the reconcile has not rebound that task
+    yet; *marker* must not get a task of its own meanwhile.
+    """
+    if not marker.printer_name:
+        return False
+    return any(
+        bound_name(task) == marker.printer_name
+        and (ns(task) or {}).get("marker_uid") != marker.uid
+        and printer_key_of(str((ns(task) or {}).get("marker_uid"))) == marker.printer_key
+        for task in our_tasks(tasks)
+    )
+
+
 def is_armed(task: dict[str, Any]) -> bool:
     """Tell whether a triggered task is armed (it has a ``next_due``)."""
     return bool(task.get("next_due"))
@@ -292,7 +362,7 @@ def paused_by_us(task: dict[str, Any]) -> bool:
 
 def _ns_with(task: dict[str, Any], marker: Marker, *, paused: bool) -> dict[str, Any]:
     """Our namespace for *task*, with the paused marker set or removed."""
-    data = {**(ns(task) or {}), "marker_uid": marker.uid, "device_id": marker.device_id}
+    data = _binding(marker, ns(task))
     if paused:
         data["paused"] = True
     else:
@@ -363,6 +433,14 @@ def task_notes(marker: Marker, settings: Settings) -> str:
     return "\n".join(lines)
 
 
+def _binding(marker: Marker, base: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Our namespace binding a task to *marker*: its sensor, device and printer name."""
+    data = {**(base or {}), "marker_uid": marker.uid, "device_id": marker.device_id}
+    if marker.printer_name:
+        data["marker_name"] = marker.printer_name
+    return data
+
+
 def build_add_task_payload(marker: Marker, settings: Settings) -> dict[str, Any]:
     """Build the ``home_keeper.add_task`` payload for a new (armed) cartridge task."""
     chip = _chip(marker, settings.lang)
@@ -372,7 +450,7 @@ def build_add_task_payload(marker: Marker, settings: Settings) -> dict[str, Any]
         "recurrence_type": "triggered",
         # device_id at the top of our namespace: Home Keeper heals exactly that key
         # when Home Assistant renumbers a device (INTEGRATING.md §1).
-        "source": {SOURCE_NS: {"marker_uid": marker.uid, "device_id": marker.device_id}},
+        "source": {SOURCE_NS: _binding(marker)},
         "task_chips": [chip] if chip else [],
         "managed_by": {
             "integration": SOURCE_NS,
@@ -402,10 +480,14 @@ def plan_marker(tasks: list[dict[str, Any]], marker: Marker, settings: Settings)
     if state is None or state == BETWEEN:
         return None
     task = task_for(tasks, marker.uid)
+    if task is not None and not matches(task, marker):
+        return None  # the sensor moved to another cartridge; the reconcile rebinds
     if task is not None and not is_enabled(task):
         return None
     if state == LOW:
         if task is None:
+            if bound_elsewhere(tasks, marker):
+                return None  # its task sits on the old sensor; the reconcile rebinds
             return CreateTask(marker.uid, build_add_task_payload(marker, settings))
         if is_armed(task):
             return None
@@ -421,6 +503,8 @@ def plan_user_completion(
     completed_at: str | None,
     marker: Marker | None,
     settings: Settings,
+    *,
+    task: dict[str, Any] | None = None,
 ) -> RevertCompletion | None:
     """Decide what to do when a user ticked our task off in Home Keeper.
 
@@ -433,6 +517,8 @@ def plan_user_completion(
     """
     if marker is None or marker.paused:
         return None
+    if task is not None and not matches(task, marker):
+        return None
     if classify(marker, settings) == OK:
         return None
     return RevertCompletion(task_id, marker.uid, completed_at)
@@ -441,19 +527,14 @@ def plan_user_completion(
 def plan_reconcile(
     tasks: list[dict[str, Any]], markers: list[Marker], settings: Settings
 ) -> list[Action]:
-    """Converge every marker's task with its current level; pause, resume, drop.
+    """Converge every marker's task with its current level; rebind, pause, resume, drop.
 
     *markers* holds every marker in the registry that is not excluded, paused ones
-    included. A task whose marker is not among them (the printer entry was deleted,
-    the sensor was excluded in the options) is deleted.
+    included. Each task is first bound to its cartridge (:func:`plan_bindings`); a
+    task whose cartridge is not among the markers (the printer entry was deleted,
+    the sensor was excluded, the printer reports the cartridge no more) is deleted.
     """
-    actions: list[Action] = []
-    wanted = {m.uid for m in markers}
-    for task in our_tasks(tasks):
-        uid = (ns(task) or {}).get("marker_uid")
-        if uid not in wanted:
-            actions.append(DeleteTask(task["id"], str(uid)))
-    view = list(tasks)
+    actions, view = plan_bindings(tasks, markers)
     for marker in markers:
         task = task_for(view, marker.uid)
         if marker.paused:
@@ -472,6 +553,61 @@ def plan_reconcile(
         if action is not None:
             actions.append(action)
     return actions
+
+
+def _target(task: dict[str, Any], markers: list[Marker]) -> Marker | None:
+    """Find the marker that is *task*'s cartridge now, or ``None`` when it is gone."""
+    src = ns(task) or {}
+    uid = src.get("marker_uid")
+    by_uid = next((m for m in markers if m.uid == uid), None)
+    name = bound_name(task)
+    if name is None or (by_uid is not None and by_uid.printer_name is None):
+        # Nothing to compare: a task from before names were recorded, or a sensor
+        # without a printer name. Trust the sensor id, as before.
+        return by_uid
+    if by_uid is not None and by_uid.printer_name == name:
+        return by_uid
+    key = printer_key_of(str(uid))
+    named = [m for m in markers if m.printer_key == key and m.printer_name == name]
+    return named[0] if len(named) == 1 else None
+
+
+def plan_bindings(
+    tasks: list[dict[str, Any]], markers: list[Marker]
+) -> tuple[list[Action], list[dict[str, Any]]]:
+    """Bind every task to its cartridge, by the printer's name for it.
+
+    Returns the rebind and delete actions, and the task list as it will be once they
+    ran, so the level planning that follows sees each task at its cartridge's sensor.
+    Two tasks never share a sensor: the one already on it keeps it, the other goes.
+    """
+    actions: list[Action] = []
+    claims: dict[str, dict[str, Any]] = {}
+    ours = our_tasks(tasks)
+    targets = {task["id"]: _target(task, markers) for task in ours}
+    # Tasks already on their sensor claim it first.
+    order = sorted(
+        ours,
+        key=lambda t: (
+            (targets[t["id"]] is None) or (targets[t["id"]].uid != (ns(t) or {}).get("marker_uid"))
+        ),
+    )
+    rebound: dict[str, dict[str, Any]] = {}
+    for task in order:
+        target = targets[task["id"]]
+        src = ns(task) or {}
+        if target is None or target.uid in claims:
+            actions.append(DeleteTask(task["id"], str(src.get("marker_uid"))))
+            continue
+        claims[target.uid] = task
+        binding = _binding(target, src)
+        if binding != src:
+            source = {SOURCE_NS: binding}
+            actions.append(RebindTask(task["id"], target.uid, source))
+            rebound[task["id"]] = {**task, "source": {**(task.get("source") or {}), **source}}
+    deleted = {a.task_id for a in actions if isinstance(a, DeleteTask)}
+    view = [rebound.get(t.get("id"), t) for t in tasks if t.get("id") not in deleted]
+    return actions, view
 
 
 # ── spare cartridges (one managed appliance per printer) ─────────────────────
@@ -494,7 +630,7 @@ def part_names(markers: list[Marker]) -> dict[str, str]:
     seen: dict[str, int] = {}
     out: dict[str, str] = {}
     for marker in markers:
-        base = marker.name.strip() or marker.uid
+        base = marker.identity.strip() or marker.uid
         count = seen.get(base, 0)
         seen[base] = count + 1
         out[marker.uid] = base if count == 0 else f"{base} ({count + 1})"
@@ -595,24 +731,34 @@ def plan_stock(
             )
             continue  # linked on the next pass, once the appliance has an id
         wanted = desired_parts(group, settings.lang)
+        wanted_names = {p["name"] for p in wanted}
         merged: list[dict[str, Any]] = []
-        for part in wanted:
+        renamed = False
+        for marker, part in zip(group, wanted, strict=True):
             existing = _part_by_name(asset, part["name"])
+            if existing is None and marker.name not in wanted_names:
+                # Named after the sensor's display name by an earlier version: rename
+                # that part (same id) so its spare count stays with the cartridge.
+                existing = _part_by_name(asset, marker.name)
+                renamed = renamed or (existing is not None and bool(existing.get("id")))
             if existing and existing.get("id"):
                 merged.append({**part, "id": existing["id"]})
             else:
                 merged.append(dict(part))
-        wanted_names = {p["name"] for p in wanted}
         # A part no marker uses any more is left out of the list. Home Keeper drops it
         # when it counts nothing and keeps it when the user counted spares, so only an
         # uncounted leftover is a reason to write (else every pass would rewrite).
-        differs = any(
-            _part_by_name(asset, p["name"]) is None
-            or _owner_view(_part_by_name(asset, p["name"]) or {}) != _owner_view(p)
-            for p in wanted
-        ) or any(
-            p.get("name") not in wanted_names and p.get("stock") is None
-            for p in asset.get("parts") or []
+        differs = (
+            renamed
+            or any(
+                _part_by_name(asset, p["name"]) is None
+                or _owner_view(_part_by_name(asset, p["name"]) or {}) != _owner_view(p)
+                for p in wanted
+            )
+            or any(
+                p.get("name") not in wanted_names and p.get("stock") is None
+                for p in asset.get("parts") or []
+            )
         )
         if differs:
             actions.append(UpdateManagedAsset(asset["id"], merged))
@@ -621,7 +767,7 @@ def plan_stock(
         for marker in group:
             task = task_for(tasks, marker.uid)
             part = _part_by_name(asset, names[marker.uid])
-            if task is None or part is None or not part.get("id"):
+            if task is None or part is None or not part.get("id") or not matches(task, marker):
                 continue
             link = (task.get("source") or {}).get(HK_SOURCE_PART)
             if not (

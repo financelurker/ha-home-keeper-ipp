@@ -12,7 +12,7 @@ from homeassistant.config_entries import ConfigEntryDisabler
 from homeassistant.core import HomeAssistant
 from homeassistant.util import dt as dt_util
 
-from .helpers import BLACK, PRINTER_UID, set_level, settle, setup_glue
+from .helpers import BLACK, CYAN, PRINTER_UID, set_level, settle, setup_glue, shift_markers
 
 pytest.importorskip("custom_components.home_keeper", reason="Home Keeper is not installed")
 
@@ -134,3 +134,25 @@ async def test_real_home_keeper_reload_never_duplicates(hass: HomeAssistant, pri
     ours = [t for t in resp["tasks"] if (t.get("source") or {}).get(SOURCE_NS)]
     assert len(ours) == 1
     assert len(await _assets(hass)) == 1
+
+
+async def test_real_shifted_marker_numbers(hass: HomeAssistant, printer) -> None:
+    ipp_entry, device = printer
+    await _setup_real_hk(hass)
+    await setup_glue(hass)
+    task_id = (await _black(hass))["id"]
+
+    cyan_now = await shift_markers(hass, ipp_entry, device)
+    set_level(hass, BLACK, 100)  # now the waste box
+    set_level(hass, CYAN, 8)  # now the black ink
+    set_level(hass, cyan_now, 60)
+    await settle(hass)
+
+    resp = await _call(hass, "list_tasks", {}, response=True)
+    ours = [t for t in resp["tasks"] if (t.get("source") or {}).get(SOURCE_NS)]
+    assert [t["id"] for t in ours] == [task_id]
+    task = ours[0]
+    assert task["source"][SOURCE_NS]["marker_uid"] == f"{PRINTER_UID}_marker_1"
+    assert task["source"][SOURCE_NS]["marker_name"] == "Black ink"
+    assert task["next_due"]
+    assert "part" in task["source"]

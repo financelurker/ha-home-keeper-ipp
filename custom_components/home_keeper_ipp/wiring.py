@@ -252,11 +252,17 @@ class IppGlue:
                     low_level=logic.as_level(attrs.get(IPP_ATTR_MARKER_LOW_LEVEL)),
                     level=logic.as_level(state.state) if state and not paused else None,
                     paused=paused,
+                    printer_name=entry.original_name,
                 )
             )
         self._markers = {m.entity_id: m for m in markers}
         self._follow_states()
         return markers
+
+    def _printer_name(self, entity_id: str, fallback: str | None) -> str | None:
+        """Return the printer's current name for the marker behind *entity_id*."""
+        entry = er.async_get(self.hass).async_get(entity_id)
+        return entry.original_name if entry is not None else fallback
 
     def _follow_states(self) -> None:
         if self._unsub_state is not None:
@@ -299,6 +305,9 @@ class IppGlue:
             # The printer's low mark comes with every reading; a cartridge of another
             # make can carry another one, so it is read fresh each time.
             low_level=logic.as_level(attrs.get(IPP_ATTR_MARKER_LOW_LEVEL)),
+            # Read fresh too: when the printer's marker list changes, this sensor can
+            # report another cartridge before the reconcile has rebound the tasks.
+            printer_name=self._printer_name(entity_id, marker.printer_name),
         )
         self._markers[entity_id] = marker
         if not self._hk_loaded():
@@ -326,8 +335,16 @@ class IppGlue:
             return
         uid = src.get("marker_uid")
         marker = next((m for m in self._markers.values() if m.uid == uid), None)
+        if marker is not None:
+            marker = replace(
+                marker, printer_name=self._printer_name(marker.entity_id, marker.printer_name)
+            )
         action = logic.plan_user_completion(
-            data["task_id"], data.get("completed_at"), marker, self.settings
+            data["task_id"],
+            data.get("completed_at"),
+            marker,
+            self.settings,
+            task={"source": data.get("source")},
         )
         if action is None:
             return
@@ -488,6 +505,11 @@ class IppGlue:
             # force: our own tasks are deletion-protected while we are loaded.
             await self._call(HK_SERVICE_DELETE_TASK, {"task_id": action.task_id, "force": True})
             _LOGGER.debug("Deleted cartridge task %s", action.task_id)
+        elif isinstance(action, logic.RebindTask):
+            await self._call(
+                HK_SERVICE_UPDATE_TASK, {"task_id": action.task_id, "source": action.source}
+            )
+            _LOGGER.debug("Bound cartridge task %s to %s", action.task_id, action.uid)
         elif isinstance(action, (logic.PauseTask, logic.ResumeTask)):
             enabled = isinstance(action, logic.ResumeTask)
             await self._call(

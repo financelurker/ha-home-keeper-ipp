@@ -49,6 +49,8 @@ A manual copy can be switched to HACS later: download it in HACS over the existi
 
 For each cartridge (IPP *marker*), the low limit is the printer's *marker low level*, or the fallback when the printer reports none. The task notes say which one applied.
 
+Each task is bound to the cartridge by the name the printer reports for it, not by the sensor. The IPP integration numbers its sensors by their position in the printer's marker list sorted by name, so a marker the printer adds, drops or renames (after a firmware update, for example) shifts the numbers. The task then moves to the sensor that carries its cartridge now, with its history and its spare part. A cartridge the printer no longer reports under its name loses its task. Renaming a sensor in Home Assistant changes nothing.
+
 | The printer reports … | Result in Home Keeper |
 |---|---|
 | level at or below the low limit | the task is created or armed (also right after setup) |
