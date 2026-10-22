@@ -1,0 +1,40 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Home Keeper — IPP printer supplies",
+        "description": "Turns low ink and toner levels of your IPP printers into Home Keeper tasks. One instance covers every printer; tune it in the options afterwards."
+      }
+    },
+    "abort": {
+      "already_configured": "Already set up — one instance covers every IPP printer.",
+      "single_instance_allowed": "Already set up — one instance covers every IPP printer."
+    }
+  },
+  "options": {
+    "error": {
+      "limits_too_high": "Low limit plus refill margin must not exceed 100 %."
+    },
+    "step": {
+      "init": {
+        "title": "IPP printer supplies",
+        "data": {
+          "threshold": "Fallback low limit",
+          "recovery_margin": "Refill margin",
+          "clear_on_refill": "Clear the task when a new cartridge is reported",
+          "name_template": "Task name template",
+          "excluded_entities": "Cartridges to ignore",
+          "stock_enabled": "Count spare cartridges"
+        },
+        "data_description": {
+          "threshold": "Each cartridge uses the low level its printer reports ('Marker low level'). This value applies when the printer reports none (0 or nothing).",
+          "recovery_margin": "A new cartridge is recognised once the level is this many points above the cartridge's low limit (printer says 10 % + 20 = 30 %). Keeps a level wobbling near the limit from clearing and re-raising the task.",
+          "clear_on_refill": "On: the printer clears the task, and a manual Done is undone while no new cartridge is reported. Off: you clear the task yourself.",
+          "name_template": "Placeholders: {marker} (cartridge) and {printer}. Empty uses the default for your language. Applies to new tasks.",
+          "excluded_entities": "Their tasks are removed. Useful for waste-toner boxes, drums or a fuser you do not want to track.",
+          "stock_enabled": "One appliance per printer with each cartridge as a part. A replacement draws one spare; set a reorder point and turn on 'Auto-create buy task' on a part to get a buy task when you run low."
+        }
+      }
+    }
+  }
+}

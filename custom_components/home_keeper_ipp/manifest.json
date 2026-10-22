@@ -1,0 +1,20 @@
+{
+  "domain": "home_keeper_ipp",
+  "name": "Home Keeper — IPP printer supplies",
+  "after_dependencies": [
+    "ipp",
+    "home_keeper"
+  ],
+  "codeowners": [
+    "@financelurker"
+  ],
+  "config_flow": true,
+  "dependencies": [],
+  "documentation": "https://github.com/financelurker/ha-home-keeper-ipp",
+  "integration_type": "service",
+  "iot_class": "calculated",
+  "issue_tracker": "https://github.com/financelurker/ha-home-keeper-ipp/issues",
+  "requirements": [],
+  "single_config_entry": true,
+  "version": "0.0.0"
+}
