@@ -1,0 +1,40 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Home Keeper — IPP-Druckerverbrauchsmaterial",
+        "description": "Macht aus niedrigen Tinten- und Tonerständen deiner IPP-Drucker Home-Keeper-Tasks. Eine Instanz deckt alle Drucker ab; die Einstellungen findest du danach unter Optionen."
+      }
+    },
+    "abort": {
+      "already_configured": "Bereits eingerichtet – eine Instanz deckt alle IPP-Drucker ab.",
+      "single_instance_allowed": "Bereits eingerichtet – eine Instanz deckt alle IPP-Drucker ab."
+    }
+  },
+  "options": {
+    "error": {
+      "limits_too_high": "Untergrenze plus Wechsel-Abstand darf 100 % nicht übersteigen."
+    },
+    "step": {
+      "init": {
+        "title": "IPP-Druckerverbrauchsmaterial",
+        "data": {
+          "threshold": "Ersatz-Untergrenze",
+          "recovery_margin": "Wechsel-Abstand",
+          "clear_on_refill": "Task erledigen, wenn eine neue Patrone gemeldet wird",
+          "name_template": "Vorlage für den Task-Namen",
+          "excluded_entities": "Ignorierte Patronen",
+          "stock_enabled": "Ersatzpatronen zählen"
+        },
+        "data_description": {
+          "threshold": "Jede Patrone nutzt die Warnstufe, die ihr Drucker meldet („Marker low level“). Dieser Wert gilt, wenn der Drucker keine meldet (0 oder nichts).",
+          "recovery_margin": "Eine neue Patrone gilt als erkannt, sobald der Stand so viele Punkte über der Untergrenze der Patrone liegt (Drucker meldet 10 % + 20 = 30 %). Verhindert, dass ein um die Grenze schwankender Stand den Task erledigt und neu auslöst.",
+          "clear_on_refill": "An: Der Drucker erledigt den Task; manuelles Abhaken wird zurückgenommen, solange keine neue Patrone gemeldet ist. Aus: Du erledigst den Task selbst.",
+          "name_template": "Platzhalter: {marker} (Patrone) und {printer} (Drucker). Leer = Standard für deine Sprache. Gilt für neue Tasks.",
+          "excluded_entities": "Ihre Tasks werden entfernt. Z. B. für Resttonerbehälter, Trommel oder Fixiereinheit, die du nicht verfolgen willst.",
+          "stock_enabled": "Pro Drucker eine Appliance mit jeder Patrone als Teil. Ein Wechsel zieht eine Ersatzpatrone ab; mit Nachbestellgrenze und 'Kauf-Task automatisch anlegen' am Teil bekommst du einen Kauf-Task, wenn der Vorrat knapp wird."
+        }
+      }
+    }
+  }
+}
